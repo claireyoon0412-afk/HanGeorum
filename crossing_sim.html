@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-sans-kr@5/400.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fontsource/ibm-plex-sans-kr@5/700.css">
+<style>
+  :root { --navy:#1F3A5F; --ink:#1B2430; --muted:#5B6675; --line:#E3E7ED; --bg:#FFFFFF; --accent:#E8743B; --go:#1E9E6A; --stop:#D64545; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:'IBM Plex Sans KR', 'Noto Sans KR', sans-serif; color:var(--ink); background:var(--bg); }
+  .wrap { display:flex; flex-direction:column; gap:12px; }
+  .stage { position:relative; width:100%; border:1px solid var(--line); border-radius:14px; overflow:hidden; background:#0E1621; }
+  canvas { display:block; width:100%; height:auto; }
+  .veil { position:absolute; inset:0; display:none; align-items:center; justify-content:center; text-align:center;
+          color:#9FB0C6; font-size:17px; line-height:1.6; background:#05080C; padding:24px; }
+  .bar { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  button { font-family:inherit; font-size:15px; font-weight:600; border-radius:10px; padding:10px 18px; cursor:pointer; border:1px solid var(--navy); }
+  .primary { background:var(--navy); color:#fff; }
+  .ghost { background:#fff; color:var(--navy); }
+  .go { background:var(--go); border-color:var(--go); color:#fff; font-size:17px; padding:12px 26px; }
+  button:disabled { opacity:.45; cursor:default; }
+  .stats { display:grid; grid-template-columns:repeat(4, 1fr); gap:8px; }
+  .stat { border:1px solid var(--line); border-radius:12px; padding:10px 12px; }
+  .stat .k { font-size:12.5px; color:var(--muted); }
+  .stat .v { font-size:20px; font-weight:700; font-variant-numeric:tabular-nums; }
+  .result { display:none; border-radius:12px; padding:14px 16px; font-size:15.5px; line-height:1.6; }
+  .result.bad { display:block; background:#FDECEC; color:#8E1F1F; border:1px solid #F3C4C4; }
+  .result.ok { display:block; background:#E8F6EF; color:#145C3E; border:1px solid #BFE5D2; }
+  .note { font-size:12.5px; color:var(--muted); line-height:1.55; }
+  #foot { white-space:pre-line; }
+  @media (max-width:640px){ .stats { grid-template-columns:repeat(2,1fr); } }
+</style></head>
+<body>
+<div class="wrap">
+  <div class="stage"><canvas id="cv" width="1200" height="560"></canvas><div class="veil" id="veil"></div></div>
+  <div class="bar">
+    <button class="primary" id="play">체험 시작</button>
+    <button class="go" id="step" disabled>건너기 시작</button>
+    <button class="ghost" id="reset">처음으로</button>
+    <span class="note" id="hint"></span>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="k">경과 시간</div><div class="v" id="t">0.0초</div></div>
+    <div class="stat"><div class="k">보행자 신호</div><div class="v" id="sig">대기</div></div>
+    <div class="stat"><div class="k">이동한 거리</div><div class="v" id="d">0.0m</div></div>
+    <div class="stat"><div class="k">남은 거리</div><div class="v" id="r">-</div></div>
+  </div>
+  <div class="result" id="res"></div>
+  <div class="note" id="foot"></div>
+</div>
+<script>
+const P = /*PARAMS*/{"L":24,"G":20,"v":0.8,"sound":false,"view":"third","vision":"normal","manual":false,"lanes":4,"label":"예시"}/*END*/;
+const cv = document.getElementById("cv"), cx = cv.getContext("2d");
+const W = cv.width, H = cv.height;
+const $ = id => document.getElementById(id);
+const RED_BEFORE = 3 + Math.random() * 2;          // 녹색으로 바뀌기 전 대기 시간(초), 매번 조금씩 달라짐
+let state = "idle", t0 = 0, now = 0, startAt = null, raf = null, audio = null, beepTimer = null, spoke = false;
+const SPEED = 1;                                    // 실제 시간과 같은 속도로 재생
+
+$("foot").textContent = `조건 : ${P.label}  |  길이 ${P.L.toFixed(1)}m  |  녹색신호 ${P.G}초  |  보행속도 ${P.v}m/s  |  음향신호기 ${P.sound ? "있음" : "없음"}`
+  + "\n※ 녹색신호시간에 녹색 점멸 시간이 포함되는지는 데이터 설명서로 확인되지 않았습니다.";
+
+function setVision() {
+  cv.style.filter = P.vision === "low" ? "blur(7px) contrast(0.7) brightness(0.85)" : "none";
+  const veil = $("veil");
+  if (P.vision === "blind") {
+    veil.style.display = "flex";
+    veil.innerHTML = P.sound
+      ? "화면이 보이지 않는 상태입니다.<br>음향신호기 안내음이 들리면 ‘건너기 시작’을 누르십시오."
+      : "화면이 보이지 않는 상태입니다.<br>이 횡단보도에는 음향신호기가 없습니다. 신호가 언제 바뀌는지 알 수 있을지 확인해 보십시오.";
+  } else veil.style.display = "none";
+}
+setVision();
+const HINT = (P.manual || P.vision === "blind") ? "녹색 신호라고 판단되면 ‘건너기 시작’을 누르십시오." : "";
+$("hint").textContent = HINT;
+
+// ─ 소리 : 음향신호기가 있을 때만 녹색 신호 동안 안내음과 음성을 냅니다 ─
+function beep() {
+  if (!audio) return;
+  const o = audio.createOscillator(), g = audio.createGain();
+  o.type = "square"; o.frequency.value = 1180;
+  g.gain.setValueAtTime(0.0001, audio.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.18, audio.currentTime + 0.01);
+  g.gain.exponentialRampToValueAtTime(0.0001, audio.currentTime + 0.12);
+  o.connect(g).connect(audio.destination); o.start(); o.stop(audio.currentTime + 0.14);
+}
+function speak(text) {
+  try { const u = new SpeechSynthesisUtterance(text); u.lang = "ko-KR"; u.rate = 1.05; speechSynthesis.cancel(); speechSynthesis.speak(u); } catch (e) {}
+}
+
+function phase(tt) {           // 'red-before' → 'green' → 'red-after'
+  if (tt < RED_BEFORE) return "red-before";
+  if (tt < RED_BEFORE + P.G) return "green";
+  return "red-after";
+}
+function walked(tt) {
+  if (startAt === null) return 0;
+  return Math.min(P.L, Math.max(0, (tt - startAt) * P.v));
+}
+
+// ─ 공통 그리기 도구 ─
+function rnd(seed) { let v = seed; return () => { v = (v * 16807) % 2147483647; return (v - 1) / 2147483646; }; }
+function rrect(x, y, w, h, r) {
+  cx.beginPath(); cx.moveTo(x + r, y); cx.arcTo(x + w, y, x + w, y + h, r); cx.arcTo(x + w, y + h, x, y + h, r);
+  cx.arcTo(x, y + h, x, y, r); cx.arcTo(x, y, x + w, y, r); cx.closePath();
+}
+function tree(x, y, r) {
+  cx.fillStyle = "rgba(20,30,20,.18)"; cx.beginPath(); cx.arc(x + r * 0.18, y + r * 0.18, r, 0, 7); cx.fill();
+  const g = cx.createRadialGradient(x - r * 0.35, y - r * 0.35, r * 0.15, x, y, r);
+  g.addColorStop(0, "#9CCB86"); g.addColorStop(1, "#4C8645"); cx.fillStyle = g;
+  cx.beginPath(); cx.arc(x, y, r, 0, 7); cx.fill();
+}
+function bushRow(x0, x1, y, r) {
+  for (let x = x0, i = 0; x < x1; x += r * 1.3, i++) { cx.fillStyle = i % 2 ? "#5E9A57" : "#71AF67"; cx.beginPath(); cx.arc(x, y + (i % 2) * 3, r, 0, 7); cx.fill(); }
+}
+function pavers(y0, h) {
+  cx.fillStyle = "#DCDFE4"; cx.fillRect(0, y0, W, h);
+  cx.strokeStyle = "#C9CED5"; cx.lineWidth = 1;
+  for (let r = 0; r * 20 < h; r++) {
+    const y = y0 + r * 20; cx.beginPath(); cx.moveTo(0, y); cx.lineTo(W, y); cx.stroke();
+    for (let x = (r % 2) * 20; x < W; x += 40) { cx.beginPath(); cx.moveTo(x, y); cx.lineTo(x, Math.min(y + 20, y0 + h)); cx.stroke(); }
+  }
+}
+function tactile(x, y, w, h) {
+  cx.fillStyle = "#E8C547"; cx.fillRect(x, y, w, h);
+  cx.fillStyle = "#C9A92E";
+  for (let i = x + 8; i < x + w - 4; i += 14) for (let j = y + 6; j < y + h - 2; j += 10) { cx.beginPath(); cx.arc(i, j, 2.4, 0, 7); cx.fill(); }
+}
+const CAR_COLORS = ["#E9ECF0", "#2F3A48", "#8C1C1C", "#4A6FA5", "#A7AFBA", "#F1F2F4", "#1E2A36"];
+function carTop(x, y, w, h, col, right, lit) {                  // 위에서 본 자동차
+  cx.fillStyle = "rgba(0,0,0,.25)"; rrect(x + 3, y + 4, w, h, 10); cx.fill();
+  cx.fillStyle = col; rrect(x, y, w, h, 10); cx.fill();
+  cx.fillStyle = "rgba(255,255,255,.18)"; rrect(x + w * 0.3, y + h * 0.16, w * 0.4, h * 0.68, 6); cx.fill();
+  cx.fillStyle = "#1C2733";
+  const fx = right ? x + w * 0.66 : x + w * 0.12, bx = right ? x + w * 0.12 : x + w * 0.74;
+  rrect(fx, y + h * 0.14, w * 0.2, h * 0.72, 4); cx.fill();
+  rrect(bx, y + h * 0.18, w * 0.14, h * 0.64, 4); cx.fill();
+  cx.fillStyle = lit ? "#FFE9A8" : "#F6F2E0";
+  const hx = right ? x + w - 6 : x + 2;
+  cx.fillRect(hx, y + 5, 4, h * 0.22); cx.fillRect(hx, y + h - 5 - h * 0.22, 4, h * 0.22);
+  if (lit) { const gx = right ? x + w + 4 : x - 4; const g = cx.createRadialGradient(gx, y + h / 2, 2, gx, y + h / 2, 60);
+    g.addColorStop(0, "rgba(255,230,150,.55)"); g.addColorStop(1, "rgba(255,230,150,0)"); cx.fillStyle = g;
+    cx.fillRect(gx - 60, y - 30, 120, h + 60); }
+}
+function soundWaves(x, y, s, tt, dir) {                          // 음향신호기 안내음 표시
+  cx.strokeStyle = "rgba(43,209,139,.9)"; cx.lineWidth = 3 * s;
+  const k = (tt * 2) % 1;
+  for (let i = 0; i < 3; i++) { const r = (10 + i * 10 + k * 10) * s; cx.globalAlpha = 1 - (i + k) / 3;
+    cx.beginPath(); cx.arc(x, y, r, dir - 0.7, dir + 0.7); cx.stroke(); }
+  cx.globalAlpha = 1;
+}
+function poleTop(x, y, ph, tt, flip) {                          // 위에서 본 신호등 기둥과 음향신호기
+  cx.fillStyle = "rgba(0,0,0,.2)"; cx.beginPath(); cx.arc(x + 4, y + 4, 11, 0, 7); cx.fill();
+  cx.fillStyle = "#4B5563"; cx.beginPath(); cx.arc(x, y, 11, 0, 7); cx.fill();
+  cx.fillStyle = "#141A22"; rrect(x - 16, y + (flip ? 12 : -32), 32, 20, 4); cx.fill();
+  cx.fillStyle = ph === "green" ? "#2BD18B" : "#FF4D4D"; rrect(x - 11, y + (flip ? 16 : -28), 22, 12, 3); cx.fill();
+  if (P.sound) {
+    cx.fillStyle = "#1F3A5F"; rrect(x + 12, y - 9, 20, 18, 3); cx.fill();
+    cx.fillStyle = "#E8C547"; cx.beginPath(); cx.arc(x + 22, y, 4, 0, 7); cx.fill();
+    if (ph === "green") soundWaves(x + 34, y, 1, tt, 0);
+  }
+}
+
+// ─ 3인칭 : 위에서 내려다본 모습 ─
+function drawThird(tt) {
+  const ph = phase(tt), d = walked(tt);
+  const top = 118, bot = H - 118, roadH = bot - top;
+  const xL = W / 2 - 110, xR = W / 2 + 110, R = rnd(7);
+  pavers(0, top); pavers(bot, H - bot);                                                            // 보도블록
+  cx.fillStyle = "#A9C79A"; cx.fillRect(0, 0, W, 34); cx.fillRect(0, H - 34, W, 34);              // 화단
+  bushRow(10, xL - 90, 22, 13); bushRow(xR + 90, W, 22, 13); bushRow(10, xL - 90, H - 20, 13); bushRow(xR + 90, W, H - 20, 13);
+  [70, 250, 950, 1130].forEach(x => { tree(x, 30, 34 + R() * 8); tree(x + 40, H - 30, 32 + R() * 8); });
+  cx.fillStyle = "#9AA3AE"; cx.fillRect(0, top - 6, W, 6); cx.fillRect(0, bot, W, 6);             // 연석
+  cx.fillStyle = "#3A4250"; cx.fillRect(0, top, W, roadH);                                       // 차도
+  const lanes = Math.max(1, P.lanes || 2), mid = Math.ceil(lanes / 2);
+  for (let i = 1; i < lanes; i++) {
+    const y = top + roadH * i / lanes;
+    if (i === lanes - mid) { cx.fillStyle = "#E3C04B"; cx.fillRect(0, y - 5, W, 3); cx.fillRect(0, y + 2, W, 3); }   // 중앙선
+    else { cx.strokeStyle = "#E6E8EB"; cx.lineWidth = 3; cx.setLineDash([30, 26]); cx.beginPath(); cx.moveTo(0, y); cx.lineTo(W, y); cx.stroke(); cx.setLineDash([]); }
+  }
+  const midY = top + roadH * (lanes - mid) / lanes;
+  cx.fillStyle = "#F2F4F7"; cx.fillRect(xL - 40, midY, 6, bot - midY); cx.fillRect(xR + 34, top, 6, midY - top);   // 정지선
+  cx.fillStyle = "#F2F4F7";
+  for (let y = top + 10; y < bot - 10; y += 34) cx.fillRect(xL, y, xR - xL, 18);                // 횡단보도
+  cx.fillStyle = "#B7BEC8"; cx.beginPath(); cx.moveTo(xL - 14, bot); cx.lineTo(xR + 14, bot); cx.lineTo(xR + 4, bot + 8); cx.lineTo(xL - 4, bot + 8); cx.fill();
+  cx.beginPath(); cx.moveTo(xL - 14, top); cx.lineTo(xR + 14, top); cx.lineTo(xR + 4, top - 8); cx.lineTo(xL - 4, top - 8); cx.fill();   // 보도턱낮춤
+  tactile(xL - 4, bot + 12, xR - xL + 8, 26); tactile(xL - 4, top - 38, xR - xL + 8, 26);        // 점자블록
+  const lit = ph === "red-after";
+  for (let i = 0; i < lanes; i++) {                                                               // 대기 차량
+    const lh = roadH / lanes, cy = top + lh * i + lh / 2, h = Math.min(46, lh * 0.62), w = h * 2.2;
+    const lower = i >= lanes - mid, col = CAR_COLORS[(i * 3 + 1) % CAR_COLORS.length];
+    if (lower) { carTop(xL - 52 - w, cy - h / 2, w, h, col, true, lit); carTop(xL - 72 - 2 * w, cy - h / 2, w, h, CAR_COLORS[(i + 4) % 7], true, lit); }
+    else { carTop(xR + 52, cy - h / 2, w, h, col, false, lit); carTop(xR + 72 + w, cy - h / 2, w, h, CAR_COLORS[(i + 2) % 7], false, lit); }
+  }
+  poleTop(xR + 34, bot + 34, ph, tt, true); poleTop(xL - 34, top - 34, ph, tt, false);           // 신호등 기둥
+  [180, 1020].forEach(x => { const g = cx.createRadialGradient(x, top - 60, 2, x, top - 60, 26); g.addColorStop(0, "rgba(255,240,200,.9)"); g.addColorStop(1, "rgba(255,240,200,0)");
+    cx.fillStyle = g; cx.fillRect(x - 26, top - 86, 52, 52); cx.fillStyle = "#59626F"; cx.beginPath(); cx.arc(x, top - 60, 6, 0, 7); cx.fill(); });   // 가로등
+  const py = startAt === null ? bot + 66 : bot - (d / P.L) * roadH, px = W / 2;                   // 보행자
+  cx.fillStyle = "rgba(0,0,0,.22)"; cx.beginPath(); cx.ellipse(px + 4, py + 5, 22, 14, 0, 0, 7); cx.fill();
+  cx.fillStyle = ph === "red-after" && d < P.L && startAt !== null ? "#C8423B" : "#1F3A5F";
+  cx.beginPath(); cx.ellipse(px, py, 22, 13, 0, 0, 7); cx.fill();
+  cx.fillStyle = "#F0C9A6"; cx.beginPath(); cx.arc(px, py - 2, 9, 0, 7); cx.fill();
+  cx.fillStyle = "#2B2B2B"; cx.beginPath(); cx.arc(px, py - 4, 8, Math.PI, 2 * Math.PI); cx.fill();
+  if (P.vision === "blind") { cx.strokeStyle = "#F7F7F7"; cx.lineWidth = 3; cx.beginPath(); cx.moveTo(px + 14, py - 4); cx.lineTo(px + 26, py - 40); cx.stroke();
+    cx.strokeStyle = "#D64545"; cx.beginPath(); cx.moveTo(px + 24, py - 34); cx.lineTo(px + 26, py - 40); cx.stroke(); }   // 흰지팡이
+  drawSignal(W - 150, 30, 110, ph, tt);
+  cx.fillStyle = "rgba(255,255,255,.88)"; rrect(18, 44, 330, 40, 10); cx.fill();
+  cx.fillStyle = "#1B2430"; cx.font = "600 21px 'IBM Plex Sans KR', sans-serif";
+  cx.fillText(`횡단보도 길이 ${P.L.toFixed(1)}m  |  ${lanes}차로`, 32, 71);
+}
+
+// ─ 1인칭 : 건너는 사람의 눈높이 ─
+function drawFirst(tt) {
+  const ph = phase(tt), d = walked(tt), remain = P.L - d;
+  const hor = H * 0.36, R = rnd(11);
+  const persp = z => hor + (H - hor) * (3 / (z + 3));                                            // 앞쪽 z미터 지점의 화면 높이
+  const half = z => (W * 0.55) * (3 / (z + 3));
+  const sky = cx.createLinearGradient(0, 0, 0, hor); sky.addColorStop(0, "#9DB8D3"); sky.addColorStop(1, "#E3EAF2");
+  cx.fillStyle = sky; cx.fillRect(0, 0, W, hor);
+  const bs = 3 / (remain + 9);                                                                    // 건물 (멀수록 작게)
+  for (let x = -20; x < W; ) {
+    const bw = (90 + R() * 120) * (0.6 + bs * 2), bh = (60 + R() * 150) * (0.5 + bs * 3);
+    cx.fillStyle = R() > 0.5 ? "#B4C0CD" : "#A3B1C0"; cx.fillRect(x, hor - bh, bw, bh);
+    cx.fillStyle = "rgba(255,255,255,.35)";
+    for (let wx = x + 8; wx < x + bw - 10; wx += 18) for (let wy = hor - bh + 10; wy < hor - 10; wy += 20) cx.fillRect(wx, wy, 8, 10);
+    x += bw + 4;
+  }
+  cx.fillStyle = "#3A4250"; cx.fillRect(0, hor, W, H - hor);                                       // 차도
+  const farY = persp(remain);
+  const sw = cx.createLinearGradient(0, hor, 0, farY); sw.addColorStop(0, "#C3C9D1"); sw.addColorStop(1, "#D6DAE0");
+  cx.fillStyle = sw; cx.fillRect(0, hor, W, Math.max(0, farY - hor));                             // 건너편 보도
+  cx.strokeStyle = "rgba(160,168,178,.6)"; cx.lineWidth = 1;
+  for (let k = 1; k < 6; k++) { const y = hor + (farY - hor) * k / 6; cx.beginPath(); cx.moveTo(0, y); cx.lineTo(W, y); cx.stroke(); }
+  const ts = 3 / (remain + 5);                                                                    // 건너편 나무와 화단
+  [-0.42, -0.3, 0.3, 0.44].forEach((f, i) => { const x = W / 2 + f * W * (0.7 + ts); const y = hor + (farY - hor) * 0.35;
+    cx.fillStyle = "#6B4F3A"; cx.fillRect(x - 4 * (1 + ts * 4), y, 8 * (1 + ts * 4), 40 * (0.6 + ts * 3)); tree(x, y - 10 * (1 + ts * 5), 34 * (0.6 + ts * 4)); });
+  cx.fillStyle = "#8C949F"; cx.fillRect(0, farY - 3, W, 5);                                       // 연석
+  cx.fillStyle = "#E8C547"; const bh = Math.max(3, 16 * 3 / (remain + 3));
+  cx.fillRect(W / 2 - half(remain), farY - bh - 2, half(remain) * 2, bh);                          // 건너편 점자블록
+  const lanes = Math.max(1, P.lanes || 2), mid = Math.ceil(lanes / 2);
+  for (let i = 1; i < lanes; i++) {                                                               // 차선 (가로 방향)
+    const z = P.L * i / lanes - d; if (z <= 0.05 || z >= remain) continue;
+    const y = persp(z), lw = Math.max(1.5, 8 * 3 / (z + 3));
+    if (i === mid) { cx.fillStyle = "#E3C04B"; cx.fillRect(0, y - lw * 1.4, W, lw); cx.fillRect(0, y + lw * 0.4, W, lw); }
+    else { cx.fillStyle = "#E6E8EB"; const dash = 120 * 3 / (z + 3); for (let x = (z * 37) % (dash * 2); x < W; x += dash * 2) cx.fillRect(x, y - lw / 2, dash, lw); }
+  }
+  for (let s = Math.floor(d / 1.0) * 1.0; s < P.L; s += 1.0) {                                    // 횡단보도 줄무늬
+    const z1 = s - d, z2 = z1 + 0.5; if (z2 <= 0) continue;
+    const a = Math.max(0, z1), y1 = persp(a), y2 = persp(z2);
+    cx.fillStyle = "#EEF1F5";
+    cx.beginPath(); cx.moveTo(W / 2 - half(a), y1); cx.lineTo(W / 2 + half(a), y1);
+    cx.lineTo(W / 2 + half(z2), y2); cx.lineTo(W / 2 - half(z2), y2); cx.closePath(); cx.fill();
+  }
+  const lit = ph === "red-after";
+  const lanesDraw = [];
+  for (let i = 0; i < lanes; i++) { const zc = P.L * (i + 0.5) / lanes - d; if (zc > 0.6 && zc < remain) lanesDraw.push([i, zc]); }
+  lanesDraw.sort((a, b) => b[1] - a[1]).forEach(([i, zc]) => {                                    // 대기 차량 (먼 차부터)
+    const sc = 3 / (zc + 3), y = persp(zc), w = 330 * sc, h = 150 * sc, near = i < mid;
+    const x = near ? W / 2 - half(zc) - 30 * sc - w : W / 2 + half(zc) + 30 * sc;
+    const col = CAR_COLORS[(i * 3 + 1) % CAR_COLORS.length];
+    cx.fillStyle = "rgba(0,0,0,.3)"; cx.fillRect(x, y - h * 0.12, w, h * 0.14);
+    cx.fillStyle = col; rrect(x, y - h, w, h * 0.92, 10 * sc); cx.fill();
+    cx.fillStyle = "#26323F"; rrect(x + w * (near ? 0.62 : 0.08), y - h * 0.92, w * 0.3, h * 0.42, 6 * sc); cx.fill();
+    cx.fillStyle = "#1A1F26"; cx.beginPath(); cx.arc(x + w * 0.22, y - h * 0.08, h * 0.17, 0, 7); cx.arc(x + w * 0.78, y - h * 0.08, h * 0.17, 0, 7); cx.fill();
+    const hx = near ? x + w - 10 * sc : x + 4 * sc;
+    cx.fillStyle = lit ? "#FFF3C4" : "#E9E4CF"; cx.fillRect(hx, y - h * 0.55, 8 * sc, h * 0.16);
+    if (lit) { const g = cx.createRadialGradient(hx, y - h * 0.47, 2, hx, y - h * 0.47, 120 * sc); g.addColorStop(0, "rgba(255,236,170,.75)"); g.addColorStop(1, "rgba(255,236,170,0)");
+      cx.fillStyle = g; cx.fillRect(hx - 120 * sc, y - h * 0.47 - 120 * sc, 240 * sc, 240 * sc); }
+  });
+  const sz = Math.max(24, 130 * 6 / (remain + 6));                                                // 건너편 신호등 기둥
+  const sx = W / 2 + half(remain) + 24, sy = farY - sz * 3.4;
+  cx.fillStyle = "#59626F"; cx.fillRect(sx + sz * 0.42, sy + sz * 2.1, sz * 0.16, farY - (sy + sz * 2.1));
+  cx.fillStyle = "#141A22"; rrect(sx, sy, sz, sz * 2.1, sz * 0.12); cx.fill();
+  cx.fillStyle = ph === "green" ? "#2BD18B" : "#22302A"; rrect(sx + sz * 0.15, sy + sz * 1.1, sz * 0.7, sz * 0.8, sz * 0.08); cx.fill();
+  cx.fillStyle = ph !== "green" ? "#FF4D4D" : "#2A1C1C"; rrect(sx + sz * 0.15, sy + sz * 0.15, sz * 0.7, sz * 0.8, sz * 0.08); cx.fill();
+  if (P.sound) {                                                                                 // 음향신호기
+    const bx = sx + sz * 0.22, by = sy + sz * 2.5;
+    cx.fillStyle = "#1F3A5F"; rrect(bx, by, sz * 0.56, sz * 0.62, sz * 0.08); cx.fill();
+    cx.fillStyle = "#E8C547"; cx.beginPath(); cx.arc(bx + sz * 0.28, by + sz * 0.31, sz * 0.12, 0, 7); cx.fill();
+    if (ph === "green") soundWaves(bx + sz * 0.56, by + sz * 0.31, sz / 40, tt, 0);
+  }
+  cx.fillStyle = "rgba(14,22,33,.72)"; rrect(24, 24, 380, 64, 10); cx.fill();
+  cx.fillStyle = "#fff"; cx.font = "700 30px 'IBM Plex Sans KR', sans-serif";
+  cx.fillText(remain > 0 ? `건너편까지 ${remain.toFixed(1)}m` : "건너편 도착", 44, 68);
+}
+
+function drawSignal(x, y, w, ph, tt) {
+  cx.fillStyle = "#141A22"; cx.fillRect(x, y, w, w * 0.62);
+  cx.font = "700 30px 'IBM Plex Sans KR', sans-serif"; cx.textAlign = "center";
+  if (ph === "green") {
+    const left = RED_BEFORE + P.G - tt;
+    cx.fillStyle = "#2BD18B"; cx.fillText(`보행 ${Math.ceil(left)}`, x + w / 2, y + w * 0.42);
+  } else { cx.fillStyle = "#FF4D4D"; cx.fillText("정지", x + w / 2, y + w * 0.42); }
+  cx.textAlign = "left";
+}
+
+function draw(tt) {
+  cx.clearRect(0, 0, W, H);
+  if (P.view === "first") drawFirst(tt); else drawThird(tt);
+  const ph = phase(tt), d = walked(tt);
+  $("t").textContent = `${tt.toFixed(1)}초`;
+  $("sig").textContent = ph === "green" ? `녹색 ${Math.ceil(RED_BEFORE + P.G - tt)}초` : (ph === "red-before" ? "빨간불(대기)" : "빨간불");
+  $("sig").style.color = ph === "green" ? "#1E9E6A" : "#D64545";
+  $("d").textContent = `${d.toFixed(1)}m`;
+  $("r").textContent = startAt === null ? `${P.L.toFixed(1)}m` : `${Math.max(0, P.L - d).toFixed(1)}m`;
+}
+
+function finish(tt) {
+  state = "done"; cancelAnimationFrame(raf); clearInterval(beepTimer);
+  $("step").disabled = true; $("hint").textContent = "";
+  const res = $("res"), greenEnd = RED_BEFORE + P.G;
+  const delay = startAt === null ? null : Math.max(0, startAt - RED_BEFORE);
+  const atEnd = startAt === null ? 0 : Math.min(P.L, Math.max(0, (greenEnd - startAt) * P.v));
+  const remain = P.L - atEnd;
+  let msg;
+  if (startAt === null) { msg = "녹색 신호 동안 출발하지 못했습니다. 신호가 바뀐 것을 알 수 없으면 건널 기회 자체를 놓치게 됩니다."; res.className = "result bad"; }
+  else if (startAt < RED_BEFORE) { msg = `빨간불일 때 출발했습니다(녹색 ${(RED_BEFORE - startAt).toFixed(1)}초 전). 신호를 확인할 수 없으면 이런 위험이 생깁니다.`; res.className = "result bad"; }
+  else if (remain > 0.05) {
+    msg = `신호가 빨간불로 바뀌는 순간 <b>${remain.toFixed(1)}m</b>가 남았습니다. 차도 위에 약 <b>${(remain / P.v).toFixed(1)}초</b> 더 머물러야 합니다.`
+      + (delay > 0.3 ? ` 출발이 ${delay.toFixed(1)}초 늦었습니다.` : "");
+    res.className = "result bad";
+  } else {
+    const spare = greenEnd - (startAt + P.L / P.v);
+    msg = `녹색 신호 안에 건넜습니다. 여유 시간은 <b>${spare.toFixed(1)}초</b>입니다.` + (delay > 0.3 ? ` (출발 지연 ${delay.toFixed(1)}초 포함)` : "");
+    res.className = "result ok";
+  }
+  res.innerHTML = msg;
+  if (P.vision === "blind") $("veil").style.display = "none";
+}
+
+function loop(ts) {
+  if (!t0) t0 = ts;
+  now = (ts - t0) / 1000 * SPEED;
+  const ph = phase(now);
+  if (ph === "green" && !spoke) {
+    spoke = true;
+    if (P.sound) { speak("녹색 신호입니다."); beepTimer = setInterval(beep, 500); }
+    if (!P.manual && P.vision !== "blind" && startAt === null) startAt = now;
+  }
+  if (ph === "red-after") { clearInterval(beepTimer); }
+  draw(now);
+  const crossed = startAt !== null && walked(now) >= P.L;
+  if (crossed || now > RED_BEFORE + P.G + Math.max(4, P.L / P.v)) return finish(now);
+  raf = requestAnimationFrame(loop);
+}
+
+$("play").onclick = () => {
+  if (state === "run") return;
+  try { audio = audio || new (window.AudioContext || window.webkitAudioContext)(); audio.resume(); } catch (e) {}
+  state = "run"; t0 = 0; startAt = null; spoke = false; $("res").className = "result";
+  $("step").disabled = !(P.manual || P.vision === "blind");
+  $("hint").textContent = HINT; setVision(); raf = requestAnimationFrame(loop);
+};
+$("step").onclick = () => { if (state === "run" && startAt === null) { startAt = now; $("step").disabled = true; } };
+$("reset").onclick = () => {
+  cancelAnimationFrame(raf); clearInterval(beepTimer); try { speechSynthesis.cancel(); } catch (e) {}
+  state = "idle"; t0 = 0; startAt = null; spoke = false; $("res").className = "result"; $("step").disabled = true; $("hint").textContent = HINT; setVision(); draw(0);
+};
+draw(0);
+</script>
+</body></html>
