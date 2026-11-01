@@ -211,7 +211,7 @@ include_unknown = st.sidebar.checkbox("정보 없음 항목이 있는 횡단보�
 
 st.sidebar.markdown("<div class='side-h'>접근성</div>", unsafe_allow_html=True)
 high_contrast = st.sidebar.toggle("고대비·큰 글씨", value=False)
-voice = st.sidebar.toggle("분석 결과 음성 안내", value=False, help="화면의 분석 결과 요약을 음성으로 읽어 드립니다.")
+voice = st.sidebar.toggle("음성 안내 (페이지 전체 읽기)", value=True, help="각 페이지 맨 위의 읽기 버튼으로 화면의 모든 글을 음성으로 읽어 드립니다. 그래프는 분석 결과 요약 문장으로 안내합니다.")
 st.sidebar.caption("결손개수는 ‘미설치’로 기록된 항목만 집계합니다. 비어 있는 항목은 ‘정보 없음’으로 구분합니다.")
 
 df = std[std["동"].isin(selected_dong)] if selected_dong else std
@@ -336,18 +336,51 @@ def rate(series):
     return (series == "설치").sum() / known * 100 if known else float("nan")
 
 
-BASEMAP_TILES = [
-    ("https://tile.openstreetmap.org/{z}/{x}/{y}.png", "© OpenStreetMap contributors"),
-    ("https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png", "© CARTO"),
-]
+BASEMAP_TILES = [("https://tile.openstreetmap.org/{z}/{x}/{y}.png", "© OpenStreetMap contributors")]   # 키 없이 쓰는 공개 타일
+
+
+SPEED_GUIDE = """
+**1. 신호 설계 기준 (한국)**
+
+| 구분 | 기준 | 32m 횡단보도의 녹색시간 |
+|---|---|---|
+| 일반 | 1m당 1초 (1.0m/s) | 7 + 32 = 39초 |
+| 노인, 어린이, 장애인이 많은 곳 | 0.8m당 1초 (0.8m/s) | 7 + 40 = 47초 |
+| 노인·어린이 보호구역 | 최대 0.7m/s | 약 53초 |
+
+출처 : 서울시 교통분야 누리집(2018), 파이낸셜뉴스(2026.6.28). 7초는 보행 진입 시간입니다.
+
+**2. 이용자별 평균 보행속도 (미국 연방도로청 교육 자료, 2006)**
+
+| 이용자 | 평균 속도 |
+|---|---|
+| 일반 성인 | 약 1.2m/s |
+| 휠체어 이용자 | 약 1.08m/s |
+| 노인 | 약 0.85m/s |
+| 지팡이·목발 이용자 | 약 0.80m/s |
+| 보행보조기(워커) 이용자 | 약 0.63m/s |
+
+출처 : FHWA, Lesson 8 Pedestrian Characteristics(FHWA-HRT-05-100). 미국 평균값을 m/s로 바꾼 것이며 한국 실측과 다를 수 있습니다.
+노쇠가 진행된 노인은 0.8m/s 이하로 느려질 수 있다는 연구도 있습니다(코메디닷컴 2026.2.6, JAMA 2011 연구 인용).
+
+**3. 시각장애인과 청각장애인**
+
+- 전맹과 저시력 : 걷는 속도보다 **출발 지연**이 더 큰 문제입니다. 신호가 바뀐 것을 눈으로 확인할 수 없으면 주변 소리로 짐작해야 하므로 녹색 시간의 앞부분을 놓치기 쉽습니다. 음향신호기는 이 지연을 줄여 줍니다. 1인칭 전맹 모드에서 직접 겪어 볼 수 있습니다.
+- 흰지팡이로 바닥과 장애물을 확인하며 걸으면 평소보다 느려질 수 있습니다. 다만 시각장애인의 횡단 속도에 대한 국내 공식 수치는 찾지 못해, 이 앱은 숫자를 단정하지 않습니다.
+- 청각장애인 : 걷는 속도는 큰 차이가 없을 수 있지만, 다가오는 차 소리나 경적을 듣기 어렵습니다. 남은 시간 표시처럼 눈으로 보는 신호가 중요합니다.
+
+**4. 이 체험에서 고르는 방법**
+
+0.8m/s는 지팡이·목발 이용자와 노인의 평균에 가깝고, 보행보조기 이용자(약 0.63m/s)는 0.7m/s 기준으로도 부족할 수 있습니다. ‘직접 입력’으로 0.6m/s 안팎을 넣어 비교해 보십시오.
+"""
 
 
 def map_figure(data, color, color_map, zoom, height, hover):
     kw = dict(lat="위도", lon="경도", color=color, zoom=zoom, height=height, hover_name="주소" if "주소" in data else None,
               hover_data=hover, color_discrete_map=color_map)
     fig = (px.scatter_map(data, **kw) if hasattr(px, "scatter_map") else px.scatter_mapbox(data, **kw))
-    # 배경 지도 : 벡터 스타일 대신 이미지 타일을 두 겹으로 깐다 (위 CARTO가 막히면 아래 OSM이 보임)
-    layers = [dict(below="traces", sourcetype="raster", source=[url], sourceattribution=attr)
+    # 배경 지도 : API 키가 필요 없는 OpenStreetMap 이미지 타일, 점이 잘 보이도록 연하게
+    layers = [dict(below="traces", sourcetype="raster", source=[url], sourceattribution=attr, opacity=0.55)
               for url, attr in BASEMAP_TILES]
     if hasattr(px, "scatter_map"):
         fig.update_layout(map_style="white-bg", map_layers=layers)
@@ -367,6 +400,11 @@ def candidates(d):
 
 
 # ── 분석 · 개요 ──────────────────────────────────────────────
+# ── 음성 안내 (E) : 페이지 맨 위에서 화면의 모든 글을 읽는다 (그래프·시뮬레이터 제외) ──
+READER = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "page_reader.html"), encoding="utf-8").read()
+if voice:
+    components.html(READER.replace("__FALLBACK__", json.dumps(f"{page} 페이지입니다. 이 브라우저에서는 화면 글을 가져올 수 없습니다.", ensure_ascii=False)), height=64)
+
 if page == "개요":
     hero("2026 데이터분석 연구발표회 | 팀 한걸음",
          "서울 신호 횡단보도 접근성 점검",
@@ -613,8 +651,15 @@ elif page == "횡단 체험":
         walker = st.selectbox("보행속도", ["0.8m/s (노약자·장애인이 많은 곳의 설계 기준)", "1.0m/s (일반 설계 기준)",
                                        "0.7m/s (보호구역 설계 기준)", "직접 입력"])
         v = st.slider("보행속도(m/s)", 0.3, 1.5, 0.6, 0.05) if walker == "직접 입력" else float(walker.split("m/s")[0])
+        with st.expander("이용자별 보행속도 알아보기"):
+            st.markdown(SPEED_GUIDE)
     with c4:
-        vision = st.radio("시야", ["정상", "저시력(흐림)", "전맹(화면 가림)"], horizontal=False)
+        if view.startswith("1인칭"):
+            vision = st.radio("시야", ["정상", "저시력(흐림)", "전맹(화면 가림)"], horizontal=False)
+        else:
+            vision = "정상"
+            st.markdown("**시야**")
+            st.caption("시야 선택은 1인칭에서만 쓸 수 있습니다. 3인칭은 위에서 지켜보는 화면입니다.")
     with c5:
         manual = st.radio("출발 방식", ["녹색 신호와 동시에 자동 출발", "직접 판단하여 출발"], index=1 if vision.startswith("전맹") else 0) != "녹색 신호와 동시에 자동 출발"
         sound_mode = st.radio("음향신호기", ["데이터 기록대로", "있다고 가정", "없다고 가정"])
@@ -634,6 +679,7 @@ elif page == "횡단 체험":
     note("보행속도 0.7·0.8·1.0m/s는 보행신호 설계 기준(경찰청 「교통신호기 설치·관리 매뉴얼」, 서울시 교통 안내)에서 가져온 값이며, "
          "특정 개인의 실제 보행속도를 뜻하지 않습니다. 1인칭에서 소리가 나지 않으면 체험 화면 안을 한 번 누른 뒤 다시 시작하여 주십시오.")
 
+# (보행속도 안내 글은 파일 위쪽 SPEED_GUIDE에 있음)
 # ── 체험 · 내 주변 반경 점검 (C) ─────────────────────
 elif page == "내 주변 반경 점검":
     hero("체험 C | 생활권 점검", "내 주변 반경 점검", "교차로를 고르거나 지도에서 횡단보도를 누르면, 그 지점을 중심으로 반경 안의 횡단보도 상태와 안전 등급을 보여 드립니다.")
@@ -810,18 +856,6 @@ elif page == "데이터 점검":
             "어느 기록이 맞는지는 현장 확인이 필요하며, 이 앱은 시설 정보가 있는 표준데이터를 기준으로 분석합니다.")
     st.dataframe(mism[["횡단보도관리번호", "주소", "보행자신호등유무", "보행등"]].rename(
         columns={"보행자신호등유무": "표준데이터", "보행등": "서울시 자료"}), width="stretch", hide_index=True)
-
-# ── 음성 안내 (E) ─────────────────────────────────────────
-if voice and spoken:
-    text = json.dumps(" ".join(spoken), ensure_ascii=False)
-    components.html(f"""
-<button id="b" style="font-family:'IBM Plex Sans KR',sans-serif;font-size:15px;font-weight:700;padding:10px 18px;border-radius:10px;
-border:1px solid #1F3A5F;background:#1F3A5F;color:#fff;cursor:pointer">🔊 이 화면의 분석 결과 듣기</button>
-<button id="s" style="font-family:'IBM Plex Sans KR',sans-serif;font-size:15px;padding:10px 18px;border-radius:10px;border:1px solid #1F3A5F;
-background:#fff;color:#1F3A5F;cursor:pointer;margin-left:6px">정지</button>
-<script>const t={text};
-document.getElementById('b').onclick=()=>{{speechSynthesis.cancel();const u=new SpeechSynthesisUtterance(t);u.lang='ko-KR';u.rate=1;speechSynthesis.speak(u);}};
-document.getElementById('s').onclick=()=>speechSynthesis.cancel();</script>""", height=60)
 
 st.markdown("<hr style='margin-top:28px;border:none;border-top:1px solid #E3E7ED'>", unsafe_allow_html=True)
 note("데이터 출처 : 전국횡단보도표준데이터(공공데이터포털), 서울시 교차로 및 횡단보도 시설·위치정보(서울 열린데이터광장). "

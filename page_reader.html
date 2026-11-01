@@ -1,0 +1,55 @@
+<div id="bar" role="region" aria-label="음성 안내" style="font-family:'IBM Plex Sans KR',sans-serif;display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#EEF2F7;border:1px solid #D3DBE6;border-radius:12px;padding:8px 12px">
+<button id="b" style="font-size:15px;font-weight:700;padding:8px 16px;border-radius:9px;border:1px solid #1F3A5F;background:#1F3A5F;color:#fff;cursor:pointer">🔊 이 페이지 전체 읽기</button>
+<button id="p" style="font-size:15px;padding:8px 14px;border-radius:9px;border:1px solid #1F3A5F;background:#fff;color:#1F3A5F;cursor:pointer">일시정지</button>
+<button id="s" style="font-size:15px;padding:8px 14px;border-radius:9px;border:1px solid #1F3A5F;background:#fff;color:#1F3A5F;cursor:pointer">정지</button>
+<label style="font-size:14px;color:#33415C">속도
+<select id="r" style="font-size:14px;padding:4px;border-radius:6px"><option value="0.8">느리게</option><option value="1" selected>보통</option><option value="1.3">빠르게</option></select></label>
+<span id="m" aria-live="polite" style="font-size:13px;color:#4A5568"></span>
+</div>
+<script>
+const FALLBACK = __FALLBACK__;
+const EX = 'iframe,[data-testid="stPlotlyChart"],.js-plotly-plot,[data-testid="stIconMaterial"],[data-testid="stToolbar"],[data-testid="stDecoration"],[data-testid="stDataFrame"],style,script,noscript,svg';
+const syn = window.speechSynthesis;
+let queue = [], paused = false;
+function collect() {
+  try {
+    const D = window.parent.document, V = D.defaultView;
+    const main = D.querySelector('[data-testid="stMain"]') || D.querySelector('section.main') || D.body;
+    const parts = []; let lastB = null, charts = 0;
+    const tw = D.createTreeWalker(main, NodeFilter.SHOW_TEXT);
+    while (tw.nextNode()) {
+      const n = tw.currentNode, el = n.parentElement; if (!el) continue;
+      if (el.closest(EX)) continue;
+      const t = n.nodeValue.replace(/\s+/g, " ").trim(); if (!t) continue;
+      if (el.getClientRects().length === 0) continue;            // 화면에 보이지 않는 글자는 건너뜀
+      let b = el; while (b && V.getComputedStyle(b).display.startsWith("inline")) b = b.parentElement;
+      if (b !== lastB && parts.length) parts.push("\n");
+      parts.push(t + " "); lastB = b;
+    }
+    let txt = parts.join("").split("\n").map(s => s.trim()).filter(Boolean).map(s => /[.?!:]$/.test(s) ? s : s + ".").join(" ");
+    txt = txt.replace(/\b[a-z]+(_[a-z]+)+\b/g, "").replace(/[✓✔]/g, "").replace(/✕/g, "")
+             .replace(/[|│·•●]/g, ", ").replace(/%p/g, "퍼센트포인트").replace(/\s*,\s*,/g, ",").replace(/\s+/g, " ").trim();
+    return txt || FALLBACK;
+  } catch (e) { return FALLBACK; }
+}
+function chunks(t) {
+  const out = []; let cur = "";
+  t.split(/(?<=[.?!])\s+/).forEach(s => { if ((cur + s).length > 170 && cur) { out.push(cur); cur = ""; } cur += s + " "; });
+  if (cur.trim()) out.push(cur); return out;
+}
+function next() {
+  if (!queue.length) { document.getElementById("m").textContent = "읽기를 마쳤습니다."; return; }
+  const u = new SpeechSynthesisUtterance(queue.shift()); u.lang = "ko-KR"; u.rate = parseFloat(document.getElementById("r").value);
+  u.onend = () => { if (!paused) next(); }; syn.speak(u);
+}
+document.getElementById("b").onclick = () => {
+  syn.cancel(); paused = false; queue = chunks(collect());
+  document.getElementById("m").textContent = "읽는 중입니다. 그래프는 바로 아래의 분석 결과 요약 문장으로 안내합니다."; next();
+};
+document.getElementById("p").onclick = e => {
+  if (!paused) { paused = true; syn.pause(); e.target.textContent = "계속"; }
+  else { paused = false; syn.resume(); e.target.textContent = "일시정지"; }
+};
+document.getElementById("s").onclick = () => { queue = []; paused = false; syn.cancel(); document.getElementById("m").textContent = ""; document.getElementById("p").textContent = "일시정지"; };
+window.addEventListener("pagehide", () => syn.cancel());
+</script>
