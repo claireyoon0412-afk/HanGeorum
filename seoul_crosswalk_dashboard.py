@@ -376,6 +376,8 @@ SPEED_GUIDE = """
 
 
 def map_figure(data, color, color_map, zoom, height, hover):
+    data = data.dropna(subset=["위도", "경도"])
+    center = dict(lat=float(data["위도"].mean()), lon=float(data["경도"].mean())) if len(data) else dict(lat=37.5665, lon=126.978)
     kw = dict(lat="위도", lon="경도", color=color, zoom=zoom, height=height, hover_name="주소" if "주소" in data else None,
               hover_data=hover, color_discrete_map=color_map)
     fig = (px.scatter_map(data, **kw) if hasattr(px, "scatter_map") else px.scatter_mapbox(data, **kw))
@@ -383,9 +385,9 @@ def map_figure(data, color, color_map, zoom, height, hover):
     layers = [dict(below="traces", sourcetype="raster", source=[url], sourceattribution=attr, opacity=0.55)
               for url, attr in BASEMAP_TILES]
     if hasattr(px, "scatter_map"):
-        fig.update_layout(map_style="white-bg", map_layers=layers)
+        fig.update_layout(map_style="white-bg", map_layers=layers, map_center=center, map_zoom=zoom)
     else:
-        fig.update_layout(mapbox_style="white-bg", mapbox_layers=layers)
+        fig.update_layout(mapbox_style="white-bg", mapbox_layers=layers, mapbox_center=center, mapbox_zoom=zoom)
     fig.update_layout(margin=dict(l=0, r=0, t=0, b=0), legend=dict(orientation="h", y=1.02, x=0))
     return fig
 
@@ -428,17 +430,17 @@ if page == "개요":
         fig.update_layout(showlegend=False, height=340, xaxis_range=[0, max(sc.max() * 1.18, 1)])
         fig.update_yaxes(categoryorder="array", categoryarray=STATUS_ORDER[::-1])
         st.plotly_chart(fig, width="stretch")
-    with c2:
-        section("누구를 위한 점검인가")
-        checklist([("음향신호기·점자블록", "시각장애인, 저시력인이 신호와 횡단보도 위치를 알 수 있게 합니다."),
-                   ("보도턱낮춤", "휠체어·보행보조기 이용자, 유아차 동반 보행자, 노인이 턱 없이 진입하게 합니다."),
-                   ("녹색신호시간", "노인, 장애인, 어린이 등 걸음이 느린 보행자가 신호 안에 건너게 합니다.")])
         section("이 앱으로 할 수 있는 일")
         checklist([("분석", "서울 기록 현황, 음향신호기 설치율, 녹색신호시간, 시설 종합과 우선 개선 목록"),
                    ("현장 로드뷰 점검", "결손 횡단보도의 실제 거리 모습 확인"),
                    ("횡단 체험", "3인칭 또는 1인칭으로 신호 안에 건널 수 있는지 체험"),
                    ("내 주변 반경 점검", "교차로 기준 반경 내 횡단보도의 안전 등급 확인"),
                    ("개선 시나리오와 공개 요청서", "개선 효과 계산과 요청서 작성")])
+    with c2:
+        section("누구를 위한 점검인가")
+        checklist([("음향신호기·점자블록", "시각장애인, 저시력인이 신호와 횡단보도 위치를 알 수 있게 합니다."),
+                   ("보도턱낮춤", "휠체어·보행보조기 이용자, 유아차 동반 보행자, 노인이 턱 없이 진입하게 합니다."),
+                   ("녹색신호시간", "노인, 장애인, 어린이 등 걸음이 느린 보행자가 신호 안에 건너게 합니다.")])
         note("이 앱의 수치는 시설 대장 기록을 바탕으로 하며, 실제 작동 여부·음량·파손 상태는 반영하지 않습니다.")
 
 # ── 분석 · 서울 기록 현황 ────────────────────────────────────
